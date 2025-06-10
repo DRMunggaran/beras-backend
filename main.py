@@ -1,115 +1,73 @@
-from flask import Flask, request, jsonify
-import joblib
+from fastapi import FastAPI
+from pydantic import BaseModel
+from joblib import load
 import numpy as np
+import tensorflow as tf
 import os
-from tensorflow import keras
-import pandas as pd
 
-app = Flask(__name__)
+app = FastAPI()
 
-# Load models (modify sesuai nama file Anda)
-models = {
-    'medium_bapanas_arima': None,
-    'medium_bapanas_lstm': None,
-    'medium_silinda_arima': None,
-    'medium_silinda_lstm': None,
-    'premium_bapanas_arima': None,
-    'premium_bapanas_lstm': None,
-    'premium_silinda_arima': None,
-    'premium_silinda_lstm': None,
+# Load ARIMA models
+arima_models = {
+    "medium_silinda": load("model/medium_silinda_arima.joblib"),
+    "premium_silinda": load("model/premium_silinda_arima.joblib"),
+    "medium_bapanas": load("model/medium_bapanas_arima.joblib"),
+    "premium_bapanas": load("model/premium_bapanas_arima.joblib")
 }
 
-def load_models():
-    """Load all models at startup"""
-    models_dir = 'models'
-    
-    # Load ARIMA models (joblib)
-    arima_models = ['medium_bapanas_arima', 'medium_silinda_arima', 
-                   'premium_bapanas_arima', 'premium_silinda_arima']
-    
-    for model_name in arima_models:
-        try:
-            file_path = os.path.join(models_dir, f"{model_name}.joblib")
-            if os.path.exists(file_path):
-                models[model_name] = joblib.load(file_path)
-                print(f"Loaded {model_name}")
-        except Exception as e:
-            print(f"Error loading {model_name}: {e}")
-    
-    # Load LSTM models (h5)
-    lstm_models = ['medium_bapanas_lstm', 'medium_silinda_lstm',
-                  'premium_bapanas_lstm', 'premium_silinda_lstm']
-    
-    for model_name in lstm_models:
-        try:
-            file_path = os.path.join(models_dir, f"{model_name}.h5")
-            if os.path.exists(file_path):
-                models[model_name] = keras.models.load_model(file_path)
-                print(f"Loaded {model_name}")
-        except Exception as e:
-            print(f"Error loading {model_name}: {e}")
+# Load LSTM models
+lstm_models = {
+    "medium_silinda": tf.keras.models.load_model("model/medium_silinda_lstm.h5"),
+    "premium_silinda": tf.keras.models.load_model("model/premium_silinda_lstm.h5"),
+    "medium_bapanas": tf.keras.models.load_model("model/medium_bapanas_lstm.h5"),
+    "premium_bapanas": tf.keras.models.load_model("model/premium_bapanas_lstm.h5")
+}
 
-@app.route('/', methods=['GET'])
-def health_check():
-    return jsonify({"status": "API is running", "models_loaded": len([m for m in models.values() if m is not None])})
+class PredictRequest(BaseModel):
+    model_type: str  # "arima" atau "lstm"
+    category: str    # "medium_silinda", "premium_silinda", etc
+    steps: int = 1   # jumlah hari prediksi ke depan
+    last_values: list[float] = []  # hanya untuk LSTM
 
-@app.route('/predict/<model_type>/<product_type>', methods=['POST'])
-def predict(model_type, product_type):
-    """
-    Predict using specified model
-    model_type: arima or lstm
-    product_type: medium_bapanas, medium_silinda, premium_bapanas, premium_silinda
-    """
-    try:
-        data = request.get_json()
-        
-        # Construct model name
-        model_name = f"{product_type}_{model_type}"
-        
-        if model_name not in models or models[model_name] is None:
-            return jsonify({"error": f"Model {model_name} not found or not loaded"}), 404
-        
-        model = models[model_name]
-        
-        if model_type == 'arima':
-            # ARIMA prediction
-            steps = data.get('steps', 5)  # default 5 steps
-            forecast = model.forecast(steps=steps)
-            
-            return jsonify({
-                "model": model_name,
-                "prediction": forecast.tolist() if hasattr(forecast, 'tolist') else list(forecast)
-            })
-            
-        elif model_type == 'lstm':
-            # LSTM prediction
-            input_data = np.array(data.get('input_data', []))
-            
-            if len(input_data.shape) == 1:
-                input_data = input_data.reshape(1, -1, 1)
-            elif len(input_data.shape) == 2:
-                input_data = input_data.reshape(input_data.shape[0], input_data.shape[1], 1)
-            
-            prediction = model.predict(input_data)
-            
-            return jsonify({
-                "model": model_name,
-                "prediction": prediction.tolist()
-            })
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@app.get("/")
+def root():
+    return {"message": "API Prediksi Harga Beras (ARIMA & LSTM)"}
 
-@app.route('/models', methods=['GET'])
-def list_models():
-    """List all available models"""
-    available_models = [name for name, model in models.items() if model is not None]
-    return jsonify({"available_models": available_models})
+@app.post("/predict")
+def predict(req: PredictRequest):
+    model_key = req.category.lower()
 
-if __name__ == '__main__':
-    # Load models at startup
-    load_models()
-    
-    # Get port from environment variable (Fly.io sets this)
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    if req.model_type == "arima":
+        model = arima_models.get(model_key)
+        if not model:
+            return {"error": f"Model ARIMA untuk kategori '{model_key}' tidak ditemukan"}
+        forecast = model.forecast(steps=req.steps)
+        return {
+            "model": "ARIMA",
+            "category": model_key,
+            "predicted_prices": forecast.tolist()
+        }
+
+    elif req.model_type == "lstm":
+        model = lstm_models.get(model_key)
+        if not model:
+            return {"error": f"Model LSTM untuk kategori '{model_key}' tidak ditemukan"}
+        if not req.last_values or len(req.last_values) < 7:
+            return {"error": "Minimal 7 nilai terakhir diperlukan untuk prediksi LSTM"}
+
+        # Siapkan input shape: (1, time_steps, features)
+        input_seq = np.array(req.last_values[-7:]).reshape((1, 7, 1))
+        preds = []
+        for _ in range(req.steps):
+            pred = model.predict(input_seq)[0][0]
+            preds.append(pred)
+            input_seq = np.append(input_seq[:, 1:, :], [[[pred]]], axis=1)
+
+        return {
+            "model": "LSTM",
+            "category": model_key,
+            "predicted_prices": preds
+        }
+
+    else:
+        return {"error": "Model type harus 'arima' atau 'lstm'"}
