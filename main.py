@@ -17,7 +17,7 @@ app = FastAPI()
 # Ganti dengan domain frontend Next.js Anda yang sebenarnya di Railway.
 # Tambahkan juga localhost:3000 untuk pengembangan lokal.
 origins = [
-    "https://your-frontend-id.up.railway.app", # Ganti dengan URL frontend Railway Anda
+    "https://web-production-7f140.up.railway.app", # Ganti dengan URL frontend Railway Anda
     "http://localhost:3000",                   # Untuk pengembangan lokal Next.js
 ]
 
