@@ -1,60 +1,115 @@
 from flask import Flask, request, jsonify
-import os
 import joblib
 import numpy as np
-from tensorflow.keras.models import load_model
+import os
+from tensorflow import keras
+import pandas as pd
 
 app = Flask(__name__)
 
-# Folder model
-MODEL_DIR = "models"
+# Load models (modify sesuai nama file Anda)
+models = {
+    'medium_bapanas_arima': None,
+    'medium_bapanas_lstm': None,
+    'medium_silinda_arima': None,
+    'medium_silinda_lstm': None,
+    'premium_bapanas_arima': None,
+    'premium_bapanas_lstm': None,
+    'premium_silinda_arima': None,
+    'premium_silinda_lstm': None,
+}
 
-# Load ARIMA models (joblib)
-arima_models = {}
-for filename in os.listdir(MODEL_DIR):
-    if filename.endswith(".joblib"):
-        model_key = filename.replace(".joblib", "")
-        model_path = os.path.join(MODEL_DIR, filename)
-        arima_models[model_key] = joblib.load(model_path)
+def load_models():
+    """Load all models at startup"""
+    models_dir = 'models'
+    
+    # Load ARIMA models (joblib)
+    arima_models = ['medium_bapanas_arima', 'medium_silinda_arima', 
+                   'premium_bapanas_arima', 'premium_silinda_arima']
+    
+    for model_name in arima_models:
+        try:
+            file_path = os.path.join(models_dir, f"{model_name}.joblib")
+            if os.path.exists(file_path):
+                models[model_name] = joblib.load(file_path)
+                print(f"Loaded {model_name}")
+        except Exception as e:
+            print(f"Error loading {model_name}: {e}")
+    
+    # Load LSTM models (h5)
+    lstm_models = ['medium_bapanas_lstm', 'medium_silinda_lstm',
+                  'premium_bapanas_lstm', 'premium_silinda_lstm']
+    
+    for model_name in lstm_models:
+        try:
+            file_path = os.path.join(models_dir, f"{model_name}.h5")
+            if os.path.exists(file_path):
+                models[model_name] = keras.models.load_model(file_path)
+                print(f"Loaded {model_name}")
+        except Exception as e:
+            print(f"Error loading {model_name}: {e}")
 
-# Load LSTM models (h5)
-lstm_models = {}
-for filename in os.listdir(MODEL_DIR):
-    if filename.endswith(".h5"):
-        model_key = filename.replace(".h5", "")
-        model_path = os.path.join(MODEL_DIR, filename)
-        lstm_models[model_key] = load_model(model_path)
+@app.route('/', methods=['GET'])
+def health_check():
+    return jsonify({"status": "API is running", "models_loaded": len([m for m in models.values() if m is not None])})
 
-@app.route("/")
-def index():
-    return "API is running"
-
-@app.route("/predict/arima/<model_name>", methods=["POST"])
-def predict_arima(model_name):
-    model = arima_models.get(model_name)
-    if not model:
-        return jsonify({"error": "ARIMA model not found"}), 404
-
+@app.route('/predict/<model_type>/<product_type>', methods=['POST'])
+def predict(model_type, product_type):
+    """
+    Predict using specified model
+    model_type: arima or lstm
+    product_type: medium_bapanas, medium_silinda, premium_bapanas, premium_silinda
+    """
     try:
-        n_periods = int(request.json.get("n_periods", 1))
-        pred = model.predict(n_periods=n_periods)
-        return jsonify({"prediction": pred.tolist()})
+        data = request.get_json()
+        
+        # Construct model name
+        model_name = f"{product_type}_{model_type}"
+        
+        if model_name not in models or models[model_name] is None:
+            return jsonify({"error": f"Model {model_name} not found or not loaded"}), 404
+        
+        model = models[model_name]
+        
+        if model_type == 'arima':
+            # ARIMA prediction
+            steps = data.get('steps', 5)  # default 5 steps
+            forecast = model.forecast(steps=steps)
+            
+            return jsonify({
+                "model": model_name,
+                "prediction": forecast.tolist() if hasattr(forecast, 'tolist') else list(forecast)
+            })
+            
+        elif model_type == 'lstm':
+            # LSTM prediction
+            input_data = np.array(data.get('input_data', []))
+            
+            if len(input_data.shape) == 1:
+                input_data = input_data.reshape(1, -1, 1)
+            elif len(input_data.shape) == 2:
+                input_data = input_data.reshape(input_data.shape[0], input_data.shape[1], 1)
+            
+            prediction = model.predict(input_data)
+            
+            return jsonify({
+                "model": model_name,
+                "prediction": prediction.tolist()
+            })
+        
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/predict/lstm/<model_name>", methods=["POST"])
-def predict_lstm(model_name):
-    model = lstm_models.get(model_name)
-    if not model:
-        return jsonify({"error": "LSTM model not found"}), 404
+@app.route('/models', methods=['GET'])
+def list_models():
+    """List all available models"""
+    available_models = [name for name, model in models.items() if model is not None]
+    return jsonify({"available_models": available_models})
 
-    try:
-        input_data = request.json.get("input")
-        input_array = np.array(input_data).reshape(1, -1, 1)
-        pred = model.predict(input_array)
-        return jsonify({"prediction": pred.tolist()})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+if __name__ == '__main__':
+    # Load models at startup
+    load_models()
+    
+    # Get port from environment variable (Fly.io sets this)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
