@@ -3,11 +3,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from joblib import load # Digunakan untuk memuat model dan scaler
+from joblib import load
 import numpy as np
 import tensorflow as tf
 import logging
-import pandas as pd # Digunakan untuk membaca JSON dan manipulasi data
+import pandas as pd
+import json # Untuk membaca file JSON
 import os # Untuk memeriksa path file
 
 # Konfigurasi logging untuk visibilitas di Railway logs
@@ -18,9 +19,9 @@ app = FastAPI()
 
 # --- Konfigurasi CORS ---
 # Ganti dengan domain frontend Next.js Anda yang sebenarnya di Railway.
-# Tambahkan juga localhost:3000 untuk pengembangan lokal.
+# Tambahkan juga http://localhost:3000 untuk pengembangan lokal.
 origins = [
-    "https://web-production-YOUR-FRONTEND-ID.up.railway.app", # <-- Ganti dengan URL frontend Railway Anda
+    "https://web-production-YOUR-FRONTEND-ID.up.railway.app", # <-- GANTI DENGAN URL ASLI FRONTEND RAILWAY-MU!
     "http://localhost:3000",                               # Untuk pengembangan lokal Next.js
 ]
 
@@ -32,35 +33,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Pemuatan Data Historis Global (dari data_harga.json) ---
+# --- Pemuatan Data Historis Global (dari data_harga.json di BACKEND) ---
 # Data historis ini akan dimuat SEKALI saat aplikasi startup.
-# Asumsi data_harga.json berada di root folder backend atau di folder 'model/'.
-# Contoh: jika di root, path = "data_harga.json"
-# Contoh: jika di model/, path = "model/data_harga.json"
-HISTORICAL_DATA_PATH = "data_harga.json" # <--- SESUAIKAN JIKA FILE DI TEMPAT LAIN!
+# Pastikan data_harga.json berada di lokasi yang dapat diakses oleh main.py.
+# Misalnya, di root folder backend (`data_harga.json`) atau di folder `model/` (`model/data_harga.json`).
+HISTORICAL_DATA_PATH_BACKEND = "data_harga.json" # <--- SESUAIKAN JIKA FILE DI TEMPAT LAIN!
 historical_data_cache = {} # Cache untuk menyimpan data historis per kategori
 
 try:
-    logger.info(f"Memuat data historis dari {HISTORICAL_DATA_PATH}...")
-    # Membaca seluruh file JSON
-    with open(HISTORICAL_DATA_PATH, 'r') as f:
-        full_data_array = pd.DataFrame(json.load(f)) # Gunakan pandas untuk kemudahan akses
-    
-    # Simpan data per kategori di cache
-    historical_data_cache["medium_silinda"] = full_data_array['medium_silinda'].tolist()
-    historical_data_cache["premium_silinda"] = full_data_array['premium_silinda'].tolist()
-    historical_data_cache["medium_bapanas"] = full_data_array['medium_bapanas'].tolist()
-    historical_data_cache["premium_bapanas"] = full_data_array['premium_bapanas'].tolist()
-    logger.info("Data historis berhasil dimuat dan di-cache.")
+    logger.info(f"Memuat data historis dari {HISTORICAL_DATA_PATH_BACKEND}...")
+    with open(HISTORICAL_DATA_PATH_BACKEND, 'r') as f:
+        full_data_array_raw = json.load(f)
+    full_data_df = pd.DataFrame(full_data_array_raw) # Menggunakan pandas untuk kemudahan akses
+
+    historical_data_cache["medium_silinda"] = full_data_df['medium_silinda'].tolist()
+    historical_data_cache["premium_silinda"] = full_data_df['premium_silinda'].tolist()
+    historical_data_cache["medium_bapanas"] = full_data_df['medium_bapanas'].tolist()
+    historical_data_cache["premium_bapanas"] = full_data_df['premium_bapanas'].tolist()
+    logger.info("Data historis berhasil dimuat dan di-cache di backend.")
 except FileNotFoundError:
-    logger.error(f"File data historis tidak ditemukan: {HISTORICAL_DATA_PATH}. Pastikan file ada di path yang benar.")
-    raise Exception(f"File data historis tidak ditemukan: {HISTORICAL_DATA_PATH}")
+    logger.error(f"File data historis TIDAK DITEMUKAN di backend: {HISTORICAL_DATA_PATH_BACKEND}. Pastikan file ada.")
+    raise Exception(f"File data historis tidak ditemukan: {HISTORICAL_DATA_PATH_BACKEND}")
 except Exception as e:
-    logger.error(f"Gagal memuat data historis: {e}")
-    raise Exception(f"Gagal memuat data historis: {e}")
+    logger.error(f"Gagal memuat data historis di backend: {e}")
+    raise Exception(f"Gagal memuat data historis di backend: {e}")
 
 
-# --- Pemuatan Model dan Scaler ---
+# --- Pemuatan Model dan Scaler NYATA ---
 # Model dan Scaler akan dimuat SEKALI saat aplikasi startup.
 arima_models = {}
 lstm_models = {}
@@ -79,7 +78,7 @@ except Exception as e:
 
 try:
     logger.info("Memuat model LSTM...")
-    tf.config.set_visible_devices([], 'GPU') # Menonaktifkan penggunaan GPU jika tidak ada
+    tf.config.set_visible_devices([], 'GPU') # Menonaktifkan penggunaan GPU jika tidak tersedia.
     lstm_models["medium_silinda"] = tf.keras.models.load_model("model/medium_silinda_lstm.h5")
     lstm_models["premium_silinda"] = tf.keras.models.load_model("model/premium_silinda_lstm.h5")
     lstm_models["medium_bapanas"] = tf.keras.models.load_model("model/medium_bapanas_lstm.h5")
@@ -102,7 +101,7 @@ except Exception as e:
 
 
 # --- Skema Request Prediksi ---
-# `last_values` dihapus karena backend akan mengambilnya sendiri dari cache
+# `last_values` DIHAPUS karena backend akan mengambilnya sendiri dari cache
 class PredictRequest(BaseModel):
     category: str
     steps_ahead: int = 1
@@ -110,7 +109,7 @@ class PredictRequest(BaseModel):
 # --- Root Endpoint ---
 @app.get("/")
 async def root():
-    return {"message": "API Prediksi Harga Beras - Siap!"}
+    return {"message": "API Prediksi Harga Beras - Berjalan Normal!"}
 
 # --- Endpoint Prediksi ARIMA ---
 @app.post("/predict/{category_name}")
@@ -126,29 +125,21 @@ async def predict_arima(category_name: str, req: PredictRequest):
     if not model:
         raise HTTPException(status_code=404, detail=f"Model ARIMA untuk kategori '{category_name}' tidak ditemukan.")
     if not historical_data:
-        raise HTTPException(status_code=404, detail=f"Data historis untuk kategori '{category_name}' tidak ditemukan.")
+        raise HTTPException(status_code=404, detail=f"Data historis untuk kategori '{category_name}' tidak ditemukan di cache backend.")
 
     try:
         # PENTING UNTUK ARIMA (statsmodels):
-        # Model `statsmodels.tsa.arima.model.ARIMAResultsWrapper` yang dimuat
-        # dari joblib umumnya melakukan `forecast()` dari data terakhir yang digunakan
-        # saat model itu di-FIT.
-        # Untuk membuat ARIMA *sepenuhnya* responsif terhadap data terbaru (seluruh historis),
-        # Anda perlu MENGGUNAKAN METODE `APPLY` atau MELATIH ULANG model di sini.
-        # Melatih ulang atau apply model pada setiap request API sangatlah MAHAL.
+        # Metode `model.forecast()` dari statsmodels biasanya memprediksi dari data terakhir
+        # yang digunakan saat model itu di-FIT.
+        # Untuk membuat ARIMA responsif terhadap data terbaru, Anda perlu:
+        # 1. Menggunakan `model.append(new_data_series).forecast()` jika model mendukungnya,
+        #    atau `model.apply(new_data_series).forecast()`
+        # 2. Atau melatih ulang model dengan data historis terbaru (sangat mahal untuk API).
         #
-        # Contoh jika modelmu adalah ARIMAResultsWrapper dan kamu ingin update konteksnya:
-        # from statsmodels.tsa.arima.model import ARIMAResultsWrapper
-        # Jika modelmu adalah ARIMAResultsWrapper, ia mungkin punya metode `append` atau `apply`.
-        # Misalnya:
-        # updated_model_results = model.append(pd.Series(historical_data)) # Atau model.apply(pd.Series(historical_data))
-        # forecast = updated_model_results.forecast(steps=req.steps_ahead)
-        #
-        # Jika tidak, `model.forecast()` akan memprediksi dari konteks training-nya.
-        
-        # Untuk demo ini, kita asumsikan model sudah mengingat data trainingnya dan
-        # `forecast()` akan memprediksi dari akhir data trainingnya.
-        # Jika kamu ingin ARIMA yang dinamis, ini adalah tempat untuk implementasi `apply` atau `refit`.
+        # Jika Anda tidak melakukan `append`/`apply`/refit, prediksi akan cenderung konvergen
+        # ke rata-rata data pelatihan untuk jangka panjang.
+        # Di sini, kita asumsikan model sudah dilatih dengan data historis penuh dan
+        # `forecast()` akan memprediksi dari konteks training-nya.
         forecast = model.forecast(steps=req.steps_ahead)
         
         return {
@@ -175,17 +166,18 @@ async def predict_lstm(category_name: str, req: PredictRequest):
     if not model or not scaler:
         raise HTTPException(status_code=404, detail=f"Model atau Scaler LSTM untuk kategori '{category_name}' tidak ditemukan.")
     if not historical_data:
-        raise HTTPException(status_code=404, detail=f"Data historis untuk kategori '{category_name}' tidak ditemukan.")
+        raise HTTPException(status_code=404, detail=f"Data historis untuk kategori '{category_name}' tidak ditemukan di cache backend.")
 
     try:
-        # Tentukan `time_steps` yang digunakan model LSTM saat dilatih (misalnya 7)
-        time_steps = 7 # <--- SESUAIKAN NILAI INI dengan `sequence_length` model LSTM-mu!
+        # Tentukan `time_steps` (sequence length) yang digunakan model LSTM saat dilatih
+        # INI KRUSIAL: Sesuaikan dengan `sequence_length` atau `look_back` saat melatih model LSTM-mu!
+        time_steps = 7 # <--- SESUAIKAN NILAI INI! (misal 7 atau 10, tergantung modelmu)
 
         if len(historical_data) < time_steps:
              raise HTTPException(status_code=400, detail=f"Data historis yang tersedia ({len(historical_data)}) tidak cukup untuk LSTM. Minimal {time_steps} diperlukan.")
              
         # Ambil `time_steps` nilai TERAKHIR dari data historis LENGKAP yang ada di cache backend.
-        input_data_for_model = np.array(historical_data[-time_steps:]) # Ambil slice
+        input_data_for_model = np.array(historical_data[-time_steps:]) # Slice N data terakhir
         
         # Step 1: Scaling Input
         scaled_input_data = scaler.transform(input_data_for_model.reshape(-1, 1)) # Reshape untuk scaler
