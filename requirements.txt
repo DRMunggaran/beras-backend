@@ -6,3 +6,4 @@ pandas
 tensorflow==2.10.0 # Versi TensorFlow yang stabil untuk Python 3.10 (CPU-only)
 joblib
 gunicorn # Ini adalah server utama kita sekarang
+statsmodels 
