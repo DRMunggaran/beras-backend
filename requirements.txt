@@ -5,4 +5,5 @@ numpy
 pandas
 tensorflow
 joblib
-gunicorn  # <-- PASTIKAN BARIS INI ADA
+gunicorn
+uvicorn # <-- Tambahkan ini
