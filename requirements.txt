@@ -1,9 +1,11 @@
-fastapi==0.111.0 # Atau versi yang Anda gunakan
-uvicorn==0.30.1 # Penting untuk menjalankan FastAPI
-joblib==1.4.2   # Atau versi yang Anda gunakan
-numpy==1.26.4   # Pastikan versi yang kompatibel dengan TensorFlow
-scikit-learn==1.5.0 # Dibutuhkan oleh joblib untuk model yang di-pickle (jika pakai SKLearn di model)
-pandas==2.2.2   # Seringkali dibutuhkan oleh model statistik
-statsmodels==0.14.2 # Versi terbaru yang stabil, periksa kompatibilitas dengan model Anda
-tensorflow==2.16.1 # Versi TensorFlow yang Anda gunakan. Periksa kompatibilitas dengan Python 3.12.
-h5py==3.10.0 # Sering dibutuhkan untuk file .h5 TensorFlow
+Flask
+flask-cors
+scikit-learn # Jika Anda menggunakan joblib untuk model sklearn (misal: scaler)
+numpy
+pandas
+tensorflow # Jika Anda menggunakan model LSTM
+joblib # Untuk model ARIMA .joblib
+pydot # Optional, for tensorflow if you have graphviz
+graphviz # Optional, for tensorflow if you have graphviz
+statsmodels # Jika model ARIMA Anda dibangun dengan statsmodels
+pmdarima # Jika model ARIMA Anda dibangun dengan pmdarima
