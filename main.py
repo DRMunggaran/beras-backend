@@ -7,13 +7,13 @@ from tensorflow.keras.models import load_model
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from wsgi2asgi import WSGI2ASGI # <-- Add this import
+from uvicorn.wsgi import WSGIMiddleware # <-- Ganti import ini
 
 app = Flask(__name__)
-CORS(app) # Mengaktifkan CORS untuk mengizinkan permintaan dari frontend Next.js
+CORS(app)
 
-# Wrap the Flask app with WSGI2ASGI to make it ASGI compatible
-asgi_app = WSGI2ASGI(app) # <-- NEW LINE: Create an ASGI-compatible app
+# Wrap the Flask app with WSGIMiddleware to make it ASGI compatible
+asgi_app = WSGIMiddleware(app) # <-- Ganti ini: Gunakan WSGIMiddleware dari uvicorn
 
 # Path ke folder model dan data historis
 MODEL_DIR = 'model'
@@ -98,7 +98,6 @@ def predict(model_type, commodity_type):
             model = joblib.load(model_file)
             series_data = [entry[commodity_type] for entry in historical_data if commodity_type in entry]
             
-            # Assuming the loaded ARIMA model has a predict or forecast method
             predictions = model.predict(n_periods=steps_ahead)
             predicted_prices = predictions.tolist()
 
@@ -124,6 +123,7 @@ def predict(model_type, commodity_type):
             for _ in range(steps_ahead):
                 prediction = model.predict(current_input)[0][0]
                 predicted_prices.append(prediction)
+                new_value = prediction # Gunakan prediksi sebelumnya sebagai input untuk prediksi berikutnya
                 current_input = np.append(current_input[:, 1:, :], [[[new_value]]], axis=1)
 
             predicted_prices = [round(p) for p in predicted_prices]
@@ -138,5 +138,4 @@ def predict(model_type, commodity_type):
         return jsonify({'error': f'An error occurred during prediction: {str(e)}'}), 500
 
 if __name__ == '__main__':
-    # For local development with Flask's dev server, you still use app.run()
     app.run(debug=True, port=5000)

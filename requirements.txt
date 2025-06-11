@@ -7,4 +7,3 @@ tensorflow
 joblib
 gunicorn
 uvicorn
-wsgi2asgi # <-- Add this line
