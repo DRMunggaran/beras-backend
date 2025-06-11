@@ -1,12 +1,8 @@
 Flask
 flask-cors
-scikit-learn # Jika Anda menggunakan joblib untuk model sklearn (misal: scaler)
+scikit-learn
 numpy
 pandas
-tensorflow # Jika Anda menggunakan model LSTM
-joblib # Untuk model ARIMA .joblib
-pydot # Optional, for tensorflow if you have graphviz
-graphviz # Optional, for tensorflow if you have graphviz
-statsmodels # Jika model ARIMA Anda dibangun dengan statsmodels
-pmdarima # Jika model ARIMA Anda dibangun dengan pmdarima
-gunicorn
+tensorflow
+joblib
+gunicorn  # <-- PASTIKAN BARIS INI ADA
