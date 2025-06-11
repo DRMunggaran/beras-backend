@@ -1,9 +1,9 @@
 Flask
 flask-cors
 scikit-learn
-numpy==1.23.5  # Versi numpy yang stabil dan kompatibel dengan TF 2.10/2.11
+numpy==1.21.6   # Sangat disarankan versi ini untuk kompatibilitas TF 2.x yang lebih lama
 pandas
-tensorflow==2.11.0 # Versi TensorFlow yang stabil untuk Python 3.10/3.11 (CPU-only)
+tensorflow==2.10.0 # Versi TensorFlow yang sering lebih stabil di CPU dan Python 3.10
 joblib
 gunicorn
-uvicorn # Diperlukan untuk uvicorn.workers.UvicornWorker dan WSGIMiddleware
+uvicorn

@@ -128,11 +128,10 @@ def predict(model_type, commodity_type):
                 return jsonify({'error': f'ARIMA model file not found for {commodity_type}'}), 404
             
             print(f"[*] Loading ARIMA model from: {model_path}")
-            model = joblib.load(model_path)
-            
-            # Asumsi: Model ARIMA yang disimpan bisa langsung memprediksi `n_periods` ke depan.
+            # Asumsi: model yang diload adalah objek yang sudah fit dan bisa langsung memprediksi
             # Jika model Anda (misalnya dari `statsmodels` atau `pmdarima`) memerlukan 
             # re-fitting atau update dengan data terbaru, Anda perlu menambahkan logika di sini.
+            model = joblib.load(model_path)
             predictions = model.predict(n_periods=steps_ahead)
             predicted_prices = predictions.tolist()
             print(f"[*] ARIMA prediction successful for {commodity_type} for {steps_ahead} steps.")
@@ -144,10 +143,11 @@ def predict(model_type, commodity_type):
                 return jsonify({'error': f'LSTM model file not found for {commodity_type}'}), 404
             
             print(f"[*] Loading LSTM model from: {model_path}")
+            # load_model akan secara otomatis mengimpor TensorFlow/Keras
             model = load_model(model_path)
             
             # PENTING: Sesuaikan `look_back` dengan ukuran window yang digunakan saat melatih model LSTM Anda!
-            # Ini harus cocok dengan cara model Anda dilatih.
+            # Ini harus cocok dengan cara model Anda dilatih untuk hasil yang akurat.
             look_back = 10 # Default contoh, GANTI DENGAN NILAI AKTUAL DARI MODEL ANDA!
             
             last_n_values = get_last_n_values(historical_data, commodity_type, look_back)
@@ -186,7 +186,7 @@ def predict(model_type, commodity_type):
         # Tangani error tak terduga dan cetak traceback lengkap ke log server Railway.
         print(f"[CRITICAL ERROR] An unhandled exception occurred during prediction process: {e}")
         traceback.print_exc() # Ini sangat membantu untuk debugging di log Railway
-        return jsonify({'error': f'An internal server error occurred: {str(e)}. Please check server logs for details.'}), 500
+        return jsonify({'error': f'An internal server error occurred: {str(e)}. Please check server logs.'}), 500
 
 # Blok ini hanya akan dieksekusi saat Anda menjalankan `python main.py` secara langsung.
 # Ini adalah untuk lingkungan pengembangan lokal menggunakan server pengembangan Flask built-in.
