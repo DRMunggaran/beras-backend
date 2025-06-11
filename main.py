@@ -4,11 +4,12 @@ import traceback # Diperlukan untuk mencetak traceback lengkap ke log untuk debu
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib # Digunakan untuk model ARIMA dan mungkin scaler
-from tensorflow.keras.models import load_model # Digunakan untuk model LSTM
+# Tambahkan impor lapisan Keras secara eksplisit untuk mendefinisikan model LSTM (untuk workaround)
+from tensorflow.keras.models import Sequential, load_model 
+from tensorflow.keras.layers import LSTM, Dense 
 import numpy as np # Digunakan oleh TensorFlow dan Joblib
 import pandas as pd # Seringkali digunakan oleh pustaka ML
 from datetime import datetime, timedelta
-# from uvicorn.wsgi import WSGIMiddleware # BARIS INI TIDAK LAGI DIGUNAKAN UNTUK MEMPERBAIKI MASALAH UVICORN COMMAND NOT FOUND
 
 # Inisialisasi aplikasi Flask Anda
 app = Flask(__name__)
@@ -16,10 +17,6 @@ app = Flask(__name__)
 # Aktifkan CORS untuk mengizinkan permintaan dari frontend Next.js.
 # Untuk keamanan yang lebih baik di produksi, pertimbangkan untuk membatasi `origins` ke URL frontend Anda yang sebenarnya.
 CORS(app) 
-
-# Jika Anda kembali menggunakan uvicorn.workers.UvicornWorker di Procfile, 
-# Anda perlu mengaktifkan baris ini kembali dan menginstal uvicorn:
-# asgi_app = WSGIMiddleware(app)
 
 # Definisikan path ke folder model dan file data historis Anda.
 # Pastikan folder 'model' dan file 'data_harga.json' berada di root direktori backend Anda di Railway.
@@ -129,27 +126,27 @@ def predict(model_type, commodity_type):
             
             print(f"[*] Loading ARIMA model from: {model_path}")
             model = joblib.load(model_path)
-            predictions = model.predict(n_periods=steps_ahead)
+            predictions_raw = model.predict(n_periods=steps_ahead) # Gunakan nama berbeda agar tidak konflik
             
             # --- Perbaikan: Inverse Scaling untuk Prediksi ARIMA ---
-            # Jika model ARIMA Anda dilatih dengan data yang diskalakan,
+            # Jika model ARIMA Anda dilatih dengan data yang diskalakan (misal, StandardScaler, MinMaxScaler),
             # Anda perlu memuat objek scaler yang sama dan menggunakannya untuk mengubah
             # prediksi kembali ke skala harga aslinya.
-            # Contoh: jika Anda menggunakan StandardScaler dari scikit-learn
+            # Jika tidak dilakukan, prediksi bisa menjadi 0 atau nilai yang sangat kecil/tidak realistis.
             scaler_path = os.path.join(MODEL_DIR, f"{commodity_type}_arima_scaler.joblib")
             if os.path.exists(scaler_path):
                 print(f"[*] Loading ARIMA scaler from: {scaler_path}")
                 scaler = joblib.load(scaler_path)
-                # Skala balik prediksi. Asumsi: scaler transform array 2D (n_samples, n_features)
-                # Jadi, prediksi harus di-reshape.
-                predictions_reshaped = np.array(predictions).reshape(-1, 1)
+                # Skala balik prediksi. Asumsi: scaler.transform menerima dan mengembalikan array 2D (n_samples, n_features).
+                # Jadi, prediksi harus di-reshape (misal, dari 1D menjadi 2D) sebelum inverse_transform.
+                predictions_reshaped = np.array(predictions_raw).reshape(-1, 1)
                 predicted_prices_original_scale = scaler.inverse_transform(predictions_reshaped).flatten().tolist()
                 predicted_prices = predicted_prices_original_scale
-                print("[*] ARIMA predictions inverse-scaled.")
+                print("[*] ARIMA predictions inverse-scaled successfully.")
             else:
-                # Jika tidak ada scaler atau model tidak diskalakan, gunakan prediksi langsung.
-                predicted_prices = predictions.tolist()
-                print("[*] ARIMA predictions used directly (no inverse scaling applied).")
+                # Jika tidak ada scaler file atau model tidak diskalakan, gunakan prediksi langsung.
+                predicted_prices = predictions_raw.tolist()
+                print("[*] ARIMA predictions used directly (no inverse scaling applied, no scaler file found).")
             # --- Akhir Perbaikan Scaling ---
 
             # Bulatkan hasil prediksi ke integer terdekat (harga biasanya bilangan bulat).
@@ -162,21 +159,42 @@ def predict(model_type, commodity_type):
                 print(f"[ERROR] LSTM model file not found at: {model_path}")
                 return jsonify({'error': f'LSTM model file not found for {commodity_type}'}), 404
             
-            print(f"[*] Loading LSTM model from: {model_path}")
-            # --- Perbaikan: Kompatibilitas Versi TensorFlow ---
-            # Error `Unrecognized keyword arguments: ['batch_shape']`
-            # Terjadi karena model `.h5` disimpan dengan versi TensorFlow yang berbeda/lebih baru
+            print(f"[*] Attempting to load LSTM model/weights from: {model_path}")
+            # --- Perbaikan: Mengatasi 'Unrecognized keyword arguments: ['batch_shape']' TANPA MELATIH ULANG ---
+            # Error ini terjadi karena model `.h5` disimpan dengan versi TensorFlow yang berbeda/lebih baru
             # dari yang digunakan di Railway (TensorFlow 2.10.0).
-            # SOLUSI: Latih ulang dan simpan model LSTM Anda di lingkungan
-            # dengan TensorFlow 2.10.0 (sesuai requirements.txt Anda) atau versi kompatibel lainnya.
-            # Kemudian, ganti file `.h5` di folder `model/` Anda.
-            # Kode `load_model` ini sendiri sudah benar, tetapi model yang dimuat harus kompatibel.
-            model = load_model(model_path)
-            # --- Akhir Perbaikan Kompatibilitas ---
+            # Solusi di sini adalah MENDIFINISIKAN ULANG arsitektur model di kode, 
+            # kemudian hanya memuat bobot (weights) dari file `.h5`.
             
-            # PENTING: Sesuaikan `look_back` dengan ukuran window yang digunakan saat melatih model LSTM Anda!
-            # Nilai ini HARUS cocok dengan hyperparameter yang digunakan selama training.
+            # PENTING: Anda HARUS mengganti arsitektur model di bawah ini agar SAMA PERSIS
+            # dengan arsitektur model LSTM yang Anda latih dan simpan ke file .h5 Anda.
+            # Jika tidak sama persis (misal: jumlah layer, jenis layer, unit, aktivasi, dll.),
+            # ini akan menyebabkan error lain atau, lebih buruk, prediksi yang sangat salah.
+            # look_back ini adalah `timesteps` dari input_shape model Anda.
+            
             look_back = 10 # Default contoh. GANTI DENGAN NILAI AKTUAL DARI MODEL ANDA!
+
+            # --- BEGIN CUSTOM LSTM MODEL ARCHITECTURE DEFINITION (WAJIB DISESUAIKAN!) ---
+            try:
+                # Contoh: Model Sequential dengan satu LSTM layer dan satu Dense output layer.
+                # SESUAIKAN `units` (jumlah neuron LSTM) dan `activation` (fungsi aktivasi)
+                # serta jumlah layer lain jika model Anda lebih kompleks.
+                model = Sequential([
+                    LSTM(units=50, activation='relu', input_shape=(look_back, 1)), 
+                    Dense(1) # Output layer: 1 unit untuk prediksi harga tunggal
+                ])
+                # Kompilasi model (diperlukan sebelum memuat bobot pada beberapa versi Keras/TF)
+                # Sesuaikan optimizer dan loss jika penting (tidak terlalu krusial untuk inferensi bobot saja)
+                model.compile(optimizer='adam', loss='mse') 
+                
+                # Muat hanya bobot (weights) dari file .h5 ke dalam arsitektur yang sudah didefinisikan.
+                model.load_weights(model_path)
+                print(f"[*] LSTM model architecture defined and weights loaded successfully from {model_path}.")
+            except Exception as model_def_error:
+                print(f"[CRITICAL ERROR] Failed to define or load weights for LSTM model: {model_def_error}")
+                traceback.print_exc()
+                return jsonify({'error': f'Failed to load LSTM model architecture or weights: {str(model_def_error)}. Please ensure model architecture in main.py matches the saved model.'}), 500
+            # --- AKHIR CUSTOM LSTM MODEL ARCHITECTURE DEFINITION ---
             
             last_n_values = get_last_n_values(historical_data, commodity_type, look_back)
             
@@ -184,22 +202,15 @@ def predict(model_type, commodity_type):
                 print(f"[ERROR] Not enough historical data for LSTM prediction for {commodity_type}. Need {look_back} days, got {len(last_n_values)}.")
                 return jsonify({'error': f'Not enough historical data for {commodity_type} to make LSTM prediction (need at least {look_back} days). Available: {len(last_n_values)}'}), 400
 
-            # Reshape input untuk LSTM: (batch_size, timesteps, features)
-            # Untuk satu sequence dan satu fitur (harga), bentuknya adalah (1, look_back, 1).
             input_sequence = np.array(last_n_values).reshape(1, look_back, 1)
 
-            # Lakukan prediksi iteratif untuk `steps_ahead` menggunakan sliding window.
             current_input_for_loop = input_sequence
             for i in range(steps_ahead):
-                # `verbose=0` untuk menekan output log Keras/TensorFlow selama prediksi.
                 prediction = model.predict(current_input_for_loop, verbose=0)[0][0]
                 predicted_prices.append(prediction)
-                
-                # Update input sequence: geser window ke depan dengan menambahkan prediksi baru.
                 new_value = prediction 
                 current_input_for_loop = np.append(current_input_for_loop[:, 1:, :], [[[new_value]]], axis=1)
             
-            # Bulatkan hasil prediksi ke integer terdekat.
             predicted_prices = [round(p) for p in predicted_prices]
             print(f"[*] LSTM prediction successful for {commodity_type} for {steps_ahead} steps. Predicted: {predicted_prices}")
 
