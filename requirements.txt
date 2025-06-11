@@ -1,9 +1,9 @@
 Flask
 flask-cors
-scikit-learn
+scikit-learn # Jika model joblib adalah dari sklearn
 numpy
 pandas
-tensorflow
-joblib
+tensorflow # Untuk model LSTM .h5
+joblib # Untuk model ARIMA .joblib
 gunicorn
-uvicorn
+uvicorn # Diperlukan untuk uvicorn.workers.UvicornWorker dan WSGIMiddleware
