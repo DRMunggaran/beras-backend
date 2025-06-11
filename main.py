@@ -1,69 +1,99 @@
 import os
 import json
+import traceback # Diperlukan untuk mencetak traceback lengkap ke log untuk debugging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib
-from tensorflow.keras.models import load_model
-import numpy as np
-import pandas as pd # Digunakan dalam asumsi model ARIMA Anda mungkin butuh Pandas Series
+from tensorflow.keras.models import load_model # Pastikan TensorFlow terinstal dan berfungsi
+import numpy as np # Diperlukan oleh TensorFlow dan seringkali oleh Joblib models
+import pandas as pd # Seringkali digunakan oleh pustaka ML
 from datetime import datetime, timedelta
-from uvicorn.wsgi import WSGIMiddleware # Import WSGIMiddleware dari uvicorn
+from uvicorn.wsgi import WSGIMiddleware # Import WSGIMiddleware untuk kompatibilitas ASGI
 
+# Inisialisasi aplikasi Flask Anda
 app = Flask(__name__)
-CORS(app) # Mengaktifkan CORS untuk mengizinkan permintaan dari frontend Next.js
 
-# Wrap the Flask app with WSGIMiddleware to make it ASGI compatible
+# Aktifkan CORS untuk mengizinkan permintaan dari frontend Next.js.
+# Untuk keamanan yang lebih baik di produksi, batasi `origins` ke URL frontend Anda.
+CORS(app) 
+
+# Wrap aplikasi Flask (WSGI) dengan WSGIMiddleware untuk membuatnya kompatibel dengan Uvicorn (ASGI).
+# Ini menyelesaikan TypeError: Flask.__call__() missing 1 required positional argument: 'start_response'
 asgi_app = WSGIMiddleware(app)
 
-# Path ke folder model dan data historis
-MODEL_DIR = 'model' # Pastikan folder 'model' berada di root backend
-DATA_HARGA_PATH = 'data_harga.json' # Pastikan 'data_harga.json' berada di root backend
+# Definisikan path ke folder model dan file data historis Anda.
+# Pastikan folder 'model' dan file 'data_harga.json' berada di root direktori backend Anda.
+MODEL_DIR = 'model' 
+DATA_HARGA_PATH = 'data_harga.json' 
 
-# Cache untuk data historis
+# Gunakan cache global untuk data historis agar hanya dimuat sekali saat aplikasi dimulai.
 HISTORICAL_DATA_CACHE = None
 
 def load_historical_data():
-    """Memuat data historis dari data_harga.json."""
+    """
+    Memuat data historis dari data_harga.json ke dalam cache.
+    Ini dipanggil saat aplikasi pertama kali diinisialisasi atau sebelum permintaan pertama.
+    """
     global HISTORICAL_DATA_CACHE
     if HISTORICAL_DATA_CACHE is None:
         try:
+            print(f"[*] Attempting to load historical data from: {DATA_HARGA_PATH}")
             with open(DATA_HARGA_PATH, 'r') as f:
-                HISTORICAL_DATA_CACHE = json.load(f)
-            # Urutkan berdasarkan tanggal untuk memastikan urutan yang benar
-            HISTORICAL_DATA_CACHE.sort(key=lambda x: x['date'])
+                data_from_file = json.load(f)
+            # Penting: Urutkan data berdasarkan tanggal untuk memastikan urutan yang benar
+            # Ini krusial untuk model time series.
+            data_from_file.sort(key=lambda x: x['date'])
+            HISTORICAL_DATA_CACHE = data_from_file
+            print(f"[*] Successfully loaded historical data. Total entries: {len(HISTORICAL_DATA_CACHE)}")
         except FileNotFoundError:
-            print(f"Error: {DATA_HARGA_PATH} not found.")
+            print(f"[ERROR] Historical data file NOT FOUND at: {DATA_HARGA_PATH}. Please ensure it's in the backend root.")
             HISTORICAL_DATA_CACHE = []
         except json.JSONDecodeError:
-            print(f"Error: Could not decode JSON from {DATA_HARGA_PATH}.")
+            print(f"[ERROR] Could not decode JSON from {DATA_HARGA_PATH}. Check file format for errors.")
+            HISTORICAL_DATA_CACHE = []
+        except Exception as e:
+            print(f"[ERROR] An unexpected error occurred while loading historical data: {e}")
+            traceback.print_exc() # Cetak traceback lengkap untuk debugging
             HISTORICAL_DATA_CACHE = []
     return HISTORICAL_DATA_CACHE
 
 def get_last_n_values(data, commodity_type, n):
-    """Mendapatkan n nilai terakhir dari data historis untuk komoditas tertentu."""
-    prices = [entry.get(commodity_type) for entry in data if commodity_type in entry]
-    # Filter out None values just in case
-    prices = [p for p in prices if p is not None]
+    """
+    Mendapatkan n nilai harga terakhir dari data historis untuk jenis komoditas tertentu.
+    Ini digunakan sebagai input (sequence) untuk model LSTM.
+    """
+    prices = [entry.get(commodity_type) for entry in data if commodity_type in entry and entry.get(commodity_type) is not None]
+    if len(prices) < n:
+        # Jika data tidak cukup, log peringatan dan kembalikan semua yang ada
+        print(f"[WARNING] Not enough historical data for {commodity_type}. Required: {n}, Available: {len(prices)}")
     return prices[-n:]
 
 @app.before_request
 def before_first_request():
-    """Muat data historis saat aplikasi pertama kali dimulai."""
-    load_historical_data()
+    """
+    Fungsi ini dijalankan oleh Flask sebelum memproses permintaan pertama.
+    Digunakan untuk memuat data historis ke cache jika belum dimuat.
+    """
+    if HISTORICAL_DATA_CACHE is None:
+        load_historical_data()
 
 @app.route('/')
 def home():
+    """
+    Endpoint root untuk memeriksa apakah API berjalan.
+    """
     return "API Prediksi Harga Beras Berjalan!"
 
 @app.route('/predict/<model_type>/<commodity_type>', methods=['GET'])
 def predict(model_type, commodity_type):
     """
-    Endpoint untuk melakukan prediksi harga beras.
+    Endpoint utama untuk melakukan prediksi harga beras menggunakan model yang dipilih.
+    
     Args:
-        model_type (str): Tipe model (e.g., 'arima', 'lstm')
-        commodity_type (str): Jenis beras (e.g., 'medium_silinda', 'premium_bapanas')
+        model_type (str): Tipe model yang akan digunakan ('arima' atau 'lstm').
+        commodity_type (str): Jenis beras yang akan diprediksi (misalnya 'medium_silinda').
     Query Params:
-        steps_ahead (int): Berapa hari ke depan untuk diprediksi. Default 1.
+        steps_ahead (int): Berapa hari ke depan untuk diprediksi. Default adalah 1.
     """
     
     steps_ahead_str = request.args.get('steps_ahead', '1')
@@ -78,63 +108,74 @@ def predict(model_type, commodity_type):
     if commodity_type not in valid_commodity_types:
         return jsonify({'error': 'Invalid commodity type'}), 400
 
+    # Pastikan data historis tersedia di cache
     historical_data = HISTORICAL_DATA_CACHE
-    if not historical_data:
-        return jsonify({'error': 'Historical data not loaded or empty'}), 500
+    if not historical_data or len(historical_data) == 0:
+        # Jika cache kosong, coba muat ulang atau beri pesan error
+        load_historical_data() 
+        if not HISTORICAL_DATA_CACHE or len(HISTORICAL_DATA_CACHE) == 0:
+            print("[ERROR] Historical data is still empty after attempt to load.")
+            return jsonify({'error': 'Historical data not available on server. Cannot make predictions.'}), 500
 
     try:
-        model_name_prefix = commodity_type.replace('_', '') # e.g., mediumsilinda
-        
-        # Load the correct model file (e.g., medium_silinda_arima.joblib -> mediumsilinda_arima.joblib if your file names are like that)
-        # However, your image shows 'medium_bapanas_arima.joblib', so we stick to the original naming convention for loading
-        model_file_name = f"{commodity_type}_{model_type}"
-        
+        model_file_name_prefix = f"{commodity_type}_{model_type}"
+        predicted_prices = []
+
         if model_type == 'arima':
-            model_path = os.path.join(MODEL_DIR, f"{model_file_name}.joblib")
+            model_path = os.path.join(MODEL_DIR, f"{model_file_name_prefix}.joblib")
             if not os.path.exists(model_path):
+                print(f"[ERROR] ARIMA model file not found at: {model_path}")
                 return jsonify({'error': f'ARIMA model file not found for {commodity_type}'}), 404
             
+            print(f"[*] Loading ARIMA model from: {model_path}")
             model = joblib.load(model_path)
             
-            # For ARIMA, assume the model itself handles forecasting based on its internal state
-            # or it expects a fresh series for re-fitting/updating.
-            # If your ARIMA model (e.g., pmdarima) expects previous data to make forecast,
-            # you might need to pass the last known historical values.
-            # However, `model.predict(n_periods=steps_ahead)` is a common pattern for trained models.
+            # Asumsi: Model ARIMA yang disimpan bisa langsung memprediksi `n_periods` ke depan.
+            # Jika model Anda (misalnya dari `statsmodels` atau `pmdarima`) memerlukan 
+            # re-fitting atau update dengan data terbaru, Anda perlu menambahkan logika di sini.
             predictions = model.predict(n_periods=steps_ahead)
             predicted_prices = predictions.tolist()
+            print(f"[*] ARIMA prediction successful for {commodity_type} for {steps_ahead} steps.")
 
         elif model_type == 'lstm':
-            model_path = os.path.join(MODEL_DIR, f"{model_file_name}.h5")
+            model_path = os.path.join(MODEL_DIR, f"{model_file_name_prefix}.h5")
             if not os.path.exists(model_path):
+                print(f"[ERROR] LSTM model file not found at: {model_path}")
                 return jsonify({'error': f'LSTM model file not found for {commodity_type}'}), 404
             
+            print(f"[*] Loading LSTM model from: {model_path}")
             model = load_model(model_path)
             
-            # LSTM requires a sequence of recent historical data as input
-            # IMPORTANT: Adjust `look_back` to match the window size used during your LSTM model's training!
-            look_back = 10 # Example: assuming your LSTM model was trained with 10 past days
+            # PENTING: Sesuaikan `look_back` dengan ukuran window yang digunakan saat melatih model LSTM Anda!
+            # Ini harus cocok dengan cara model Anda dilatih.
+            look_back = 10 # Default contoh, GANTI DENGAN NILAI AKTUAL DARI MODEL ANDA!
             
             last_n_values = get_last_n_values(historical_data, commodity_type, look_back)
+            
             if len(last_n_values) < look_back:
+                print(f"[ERROR] Not enough historical data for LSTM prediction for {commodity_type}. Need {look_back} days, got {len(last_n_values)}.")
                 return jsonify({'error': f'Not enough historical data for {commodity_type} to make LSTM prediction (need at least {look_back} days). Available: {len(last_n_values)}'}), 400
 
-            # Reshape input for LSTM: (batch_size, timesteps, features)
-            # Here: (1, look_back, 1)
+            # Reshape input untuk LSTM: (batch_size, timesteps, features)
+            # Di sini: (1, look_back, 1) karena satu sequence dan satu fitur (harga)
             input_sequence = np.array(last_n_values).reshape(1, look_back, 1)
 
-            predicted_prices = []
-            current_input = input_sequence
-            
-            for _ in range(steps_ahead):
-                prediction = model.predict(current_input, verbose=0)[0][0] # verbose=0 to suppress Keras output
+            # Lakukan prediksi iteratif untuk `steps_ahead` menggunakan sliding window
+            current_input_for_loop = input_sequence
+            for i in range(steps_ahead):
+                # verbose=0 untuk menekan output log Keras/TensorFlow selama prediksi
+                prediction = model.predict(current_input_for_loop, verbose=0)[0][0]
                 predicted_prices.append(prediction)
                 
-                # Update input sequence for the next prediction (sliding window)
-                new_value = prediction # Use the previous prediction as input for the next
-                current_input = np.append(current_input[:, 1:, :], [[[new_value]]], axis=1) # Shift the window
-
-            predicted_prices = [round(p) for p in predicted_prices] # Round to nearest integer
+                # Update input sequence untuk prediksi berikutnya (sliding window)
+                # Gunakan prediksi sebelumnya sebagai nilai baru di akhir sequence
+                new_value = prediction 
+                current_input_for_loop = np.append(current_input_for_loop[:, 1:, :], [[[new_value]]], axis=1)
+                # Pastikan input sequence tetap memiliki `look_back` elemen
+            
+            # Bulatkan hasil prediksi ke integer terdekat
+            predicted_prices = [round(p) for p in predicted_prices]
+            print(f"[*] LSTM prediction successful for {commodity_type} for {steps_ahead} steps.")
 
         else:
             return jsonify({'error': 'Invalid model type. Choose "arima" or "lstm"'}), 400
@@ -142,12 +183,14 @@ def predict(model_type, commodity_type):
         return jsonify({'predictions': predicted_prices}), 200
 
     except Exception as e:
-        print(f"Error during prediction: {e}")
-        import traceback
-        traceback.print_exc() # Print full traceback for debugging
-        return jsonify({'error': f'An error occurred during prediction: {str(e)}. Check server logs for details.'}), 500
+        # Tangani error tak terduga dan cetak traceback lengkap ke log server Railway.
+        print(f"[CRITICAL ERROR] An unhandled exception occurred during prediction process: {e}")
+        traceback.print_exc() # Ini sangat membantu untuk debugging di log Railway
+        return jsonify({'error': f'An internal server error occurred: {str(e)}. Please check server logs for details.'}), 500
 
+# Blok ini hanya akan dieksekusi saat Anda menjalankan `python main.py` secara langsung.
+# Ini adalah untuk lingkungan pengembangan lokal menggunakan server pengembangan Flask built-in.
+# Gunicorn/Uvicorn tidak akan menggunakan blok ini saat deploy.
 if __name__ == '__main__':
-    # This block is only executed when running `python main.py` directly for local Flask dev server
-    # It will not be used when running via gunicorn/uvicorn.
+    print("[*] Running Flask development server locally...")
     app.run(debug=True, port=5000)

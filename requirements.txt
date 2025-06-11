@@ -1,9 +1,9 @@
 Flask
 flask-cors
-scikit-learn # Jika model joblib adalah dari sklearn
-numpy
+scikit-learn
+numpy==1.23.5  # Versi numpy yang stabil dan kompatibel dengan TF 2.10/2.11
 pandas
-tensorflow # Untuk model LSTM .h5
-joblib # Untuk model ARIMA .joblib
+tensorflow==2.11.0 # Versi TensorFlow yang stabil untuk Python 3.10/3.11 (CPU-only)
+joblib
 gunicorn
 uvicorn # Diperlukan untuk uvicorn.workers.UvicornWorker dan WSGIMiddleware
