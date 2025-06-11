@@ -6,4 +6,5 @@ pandas
 tensorflow
 joblib
 gunicorn
-uvicorn # <-- Tambahkan ini
+uvicorn
+wsgi2asgi # <-- Add this line
